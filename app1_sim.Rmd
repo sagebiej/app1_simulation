@@ -1,0 +1,131 @@
+
+
+---
+title: "Data Simulation 2 Alternatives 3 Attributes"
+author: "Julian Sagebiel"
+date: "20 September 2018"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+library (mlogit)
+library (support.CEs)
+library (survival)
+library (reshape2)
+library(evd)
+library(dplyr)
+library(gmnl)
+```
+
+# Introduction
+
+This document provides some background information to the data generation process for the simulation as well as introduces some basic concepts that may help to better understand the Data.
+
+The whole simulation starts with the theoretical model, which was developed in section __discrete choice modeling__ in the slides. We assume that all people have the same preferences and differences between people are captured in the iid error term $\epsilon$. Therefore all people are subject to the same utility function. Assume the good to be valued consists of three attributes with each having two levels. The choice is between two alternatives. Attributes are $a_1$, $a_2$ and $a_3$. The corresponding utility function is thus:
+
+$$V_i=\beta_1*a_1+\beta_2*a_2+\beta_3*a_3$$
+where $V_i$ denotes the utlity of alternative $i$. 
+
+To simulate the data, we have to define values for the utility coefficients $\beta$, i.e. we induce preferences.
+
+```{r}
+beta1<-0.9
+beta2<-0.7
+beta3<--0.6
+```
+We immediately see that $\beta_1$ is the most important attribute, followed by $\beta_3$. $\beta_2$ is irrelevant.
+
+In a next step we create a statistical design. The package support.CEs has some capabilities to create designs.
+
+```{r}
+des1 <- Lma.design(attribute.names = list(
+  a1 = c("0", "1"),
+  a2 = c("0","1"),
+  a3 = c("0", "1")), 
+  nalternatives = 2, nblocks = 1, row.renames = FALSE, 
+   seed = 987)
+
+
+desmat1 <- make.design.matrix(choice.experiment.design = des1, 
+                             optout = FALSE, 
+                             continuous.attributes = c("a1", "a2","a3"),
+                             unlabeled = TRUE)
+```
+
+This code generates an orthogonal array, allowing to estimate all main effects, this is sufficient for our purposes.
+
+We can view the design as it could appear in a questionaire as follows.
+
+```{r}
+questionnaire(choice.experiment.design=des1)
+```
+
+
+Now, we can generate responses. In a first step, we have to replicate the design to the number of desired individuals. Each individual will answer 8 choice sets. The following code will create a _fake_ dataset for a predifined number of respondents.
+
+```{r}
+n.individuals<-500               #set number of individuals
+n.choices<-8                      #set number of choices per individual
+n.alt<-2                          #set number of alternatives
+
+df.logit <- bind_rows(replicate(
+  n.individuals,desmat1, simplify = FALSE)) # create a dataframe that replicates the design by the number of individuals
+
+N<-nrow(df.logit)                           # saves the number of rows in the new data frame (n.respondents*n.choices*n.alt)
+
+df.logit$id.individual <- rep(
+  seq(1,n.individuals), each=n.choices*n.alt)     # Unique identifier for each individual
+df.logit$id.uniquecs <- rep(
+  seq(1,N/n.alt), each=n.alt)               # Unique identifier for each choice set
+
+
+
+```
+ We can now make our simulated respondents choose. We do so by substituting the values of the attributes into the utiltiy function and add an iid Extreme value type II error term.
+ 
+```{r}
+df.logit$V<-beta1*df.logit$a1+beta2*df.logit$a2+beta3*df.logit$a3 #Deterministic part of utility
+df.logit$error <- rgumbel(N,loc=0, scale=1)                       # iid error with Extreme Value Type II distribution
+df.logit$U<-df.logit$V+df.logit$error                                               #Ulitiy function including deterministic and stochasitc part
+
+for (i in 1:max(df.logit$id.uniquecs)) {
+df.logit$choice[df.logit$id.uniquecs==i]<-  which.max(df.logit$U[df.logit$id.uniquecs==i])
+}
+df.logit$choice<-ifelse(df.logit$ALT==df.logit$choice,1,0)             
+
+```
+ 
+The result is a workable dataset with an dependent variable and three attributes as independent variables. It is now easily possible to estimate models. The R package `gmnl' has several models already implemented. It is the easiest and fastest way to get results. However, it is difficult to follow what exaclty is going on. The `gmnl' package  has some requirements to the data (e.g., the dependent variable has to be logical). Note that the current data structure is basically sufficient for modeling, and other software packages such as Stata require exaclty this format. The `mlogit' package has some functions that make it easy to put the data in the correct format. 
+```{r}
+d.l <- mlogit.data(df.logit, 
+                               id.var = "id.individual",  # identification of the individual
+                               choice = "choice",         # choice variable
+                               varying = 5:7,             # columns containing attributes
+                               shape = "long",            # wide or long shape of the data
+                              alt.var  = "ALT"
+                               ) 
+
+
+V.true<-choice~a1+a2+a3 |0
+
+
+
+ 
+clogit.output   <-gmnl(V.true,
+                        data = d.l)
+summary(clogit.output)
+
+```
+
+
+The output reflects what we would expect. You can now play around with sample size and create different designs, change the values of coefficients (the larger they are, the smaller is the error variance).
+
+```{r}
+datalogit<-d.l[c( "id.individual", "id.uniquecs" ,  "QES" , "ALT" , "choice" ,  "a1" , "a2" , "a3")]
+saveRDS(datalogit, file="datalogit.rds")
+```
+
